@@ -21,7 +21,7 @@
 import json
 import argparse
 import subprocess
-import datetime
+import getpass
 import os
 import re
 import urllib
@@ -36,6 +36,8 @@ _endpoint_bulletins = "/flow/bulletin-board"
 _endpoint_cluster = "/controller/cluster"
 _endpoint_node = "/controller/cluster/nodes/"
 _endpoint_flow_status = "/flow/status"
+_endpoint_pg_status = "/flow/process-groups/#/status"
+_endpoint_counters = "/counters"
 
 
 def getToken(url):
@@ -69,7 +71,7 @@ def execRequest( url, token, type = "GET", data = None):
             curl = "curl -k -X PUT " + url + " -H 'Accept: application/json' -H 'Authorization: Bearer " + token + "'"
         else:
             curl = "curl -k -X PUT " + url + " -H 'Content-Type: application/json' -H 'Accept: application/json' -H 'Authorization: Bearer " + token + "' --data '" + data + "'"
-    
+
     elif( type == "DELETE" ):
         if( data is None):
             curl = "curl -k -X DELETE " + url + " -H 'Accept: application/json' -H 'Authorization: Bearer " + token + "'"
@@ -103,8 +105,28 @@ def execRequest( url, token, type = "GET", data = None):
         print err
         print out
         return None
+"""
+def sendAmbariMetrics ( url, metric ):
 
+    metric = {
+        "metrics": [
+            {
+                "metricname": "Counter.PublishKafka_1_0",
+                "appid": "nifi",
+                "instanceid": "25576191-9d2e-3ec1-bda1-ac07b0d17b2c",
+                "hostname": "rjk-hdf-m",
+                "timestamp": 1432075898000,
+                "starttime": 1432075898000,
+                "metrics": {
+                    "1432075898000": 0.963781711428,
+                    "1432075899000": 1432075898000
+                }
+            }
+        ]
+    }
+    execRequest( url, type=POST, metric )
 
+"""
 
 def getIds( jData, component ):
     ids = []
@@ -132,6 +154,25 @@ def listIds( url, token, component, parent = None, isRecursive = False ):
         return ids
     else:
         return ids
+
+
+def getCounters( url, token ):
+    endpoint = _endpoint_counters
+    response = execRequest(url + endpoint, token, "GET")
+    return json.loads(response)
+
+
+def resetCounter ( url, token, id ):
+    endpoint = _endpoint_counters + '/' + id
+    response = execRequest(url + endpoint, token, "PUT")
+    print json.dumps(json.loads(response), indent=4, sort_keys=True)
+
+
+
+def resetAllCounters ( url, token ):
+    jData = getCounters(url, token)
+    for counter in jData['counters']['aggregateSnapshot']['counters']:
+        resetCounter( url, token, counter['id'])
 
 
 
@@ -197,8 +238,33 @@ def isBackpressureEnabled( url, token, connectionId ):
     endpoint = _endpoint_connection_id + connectionId
     response = execRequest(url + endpoint, token, "GET")
     jData = json.loads(response)
+    print jData['status']['aggregateSnapshot']['percentUseCount'],jData['status']['aggregateSnapshot']['percentUseBytes']
     return jData['status']['aggregateSnapshot']['percentUseCount'] == "100" or jData['status']['aggregateSnapshot']['percentUseBytes'] == "100"
 
+
+def buildConnectionDetail( url, token, connectionId ):
+    endpoint = _endpoint_connection_id + connectionId
+    response = execRequest(url + endpoint, token, "GET")
+    jData = json.loads(response)
+
+    if not jData['component']['source']['type'] == "OUTPUT_PORT" or jData['component']['source']['type'] == "INPUT_PORT":
+        rel = jData['component']['selectedRelationships'][0]
+    else: rel = ""
+
+    summary = {'parentGroup': jData['component']['parentGroupId'],
+               'from':
+                   {'name': jData['component']['source']['name'],
+                    'id': jData['component']['source']['name'],
+                    'type': jData['component']['source']['type']},
+               'to':
+                   {'name': jData['component']['destination']['name'],
+                     'id': jData['component']['destination']['name'],
+                     'type': jData['component']['destination']['type']},
+               'queueSize': jData['status']['aggregateSnapshot']['flowFilesQueued'],
+               'backpressureThreshold': jData['component']['backPressureObjectThreshold'],
+               'relationship': rel
+               }
+    return summary
 
 
 def getPgRootId( url, token ):
@@ -218,6 +284,8 @@ def getBulletins( url, token, processGroupId ):
 def getBulletinsBoard( url, token ):
     response = execRequest(url + _endpoint_bulletins + "?after=0", token, "GET")
     return json.loads(response)
+
+
 
 
 def getNiFiStatus( url, token ):
@@ -243,24 +311,6 @@ def getNiFiStatus( url, token ):
 
 
 
-def showBulletins( url, token ):
-    data = getBulletinsBoard(url, token)
-    for bulletin in data['bulletinBoard']['bulletins']:
-        if ( "sourceId" in bulletin.keys() ):
-            print bulletin['sourceId'] + "\t" + bulletin['timestamp'] + "\t" + bulletin['bulletin']['message']
-        else:
-            print "\t\t\t\t" + bulletin['timestamp'] + "\t" + bulletin['bulletin']['message']
-
-
-
-def showCluster( url, token ):
-    response = execRequest(url + _endpoint_cluster, token, "GET")
-    jData = json.loads(response)
-    for node in jData['cluster']['nodes']:
-        print node['nodeId'] + "\t" + node['address'] + "\t" + node['status'] + "\t" + node['queued']
-
-
-
 def getNodeId( url, token, nodeAddress ):
     response = execRequest(url + _endpoint_cluster, token, "GET")
     jData = json.loads(response)
@@ -270,6 +320,32 @@ def getNodeId( url, token, nodeAddress ):
     return None
 
 
+def showConnectionDetailed( url, token):
+    connections = listConnectionsId(url, token, None, True)
+    for connectionId in connections:
+        print json.dumps(buildConnectionDetail( url, token, connectionId ), indent=4, sort_keys=True)
+
+
+
+def showBulletins( url, token ):
+    data = getBulletinsBoard(url, token)
+    for bulletin in data['bulletinBoard']['bulletins']:
+        if ( "sourceId" in bulletin.keys() ):
+            print bulletin['sourceId'] + "\t" + bulletin['timestamp'] + "\t" + bulletin['bulletin']['message']
+        else:
+            print "\t\t\t\t" + bulletin['timestamp'] + "\t" + bulletin['bulletin']['message']
+
+
+def showCluster( url, token ):
+    response = execRequest(url + _endpoint_cluster, token, "GET")
+    jData = json.loads(response)
+    for node in jData['cluster']['nodes']:
+        print node['nodeId'] + "\t" + node['address'] + "\t" + node['status'] + "\t" + node['queued']
+
+
+def showCounters( url ,token ):
+    print json.dumps(getCounters( url, token), indent=4, sort_keys=True)
+
 
 def showNode( url, token, nodeAddress ):
     response = execRequest(url + _endpoint_node + getNodeId(url, token, nodeAddress), token, "GET")
@@ -277,6 +353,32 @@ def showNode( url, token, nodeAddress ):
     print jData
     return jData
 
+
+def showPgHealth( url, token, pg ):
+    response = execRequest(url + _endpoint_pg_status.replace('#', pg),  token, "GET")
+    jData = json.loads(response)
+    runProc = 0
+    statSnapshot = jData['processGroupStatus']['aggregateSnapshot']
+
+    for processor in statSnapshot['processorStatusSnapshots']:
+        if processor['processorStatusSnapshot']['runStatus'] != "Running":
+            runProc += 1
+
+    embeddedPgs = []
+
+    for childpg in statSnapshot['processGroupStatusSnapshots']:
+        child = {'name': childpg['processGroupStatusSnapshot']['name'],
+                 'queuedSize': childpg['processGroupStatusSnapshot']['queuedSize'],
+                 'flowFilesSent': childpg['processGroupStatusSnapshot']['flowFilesSent'],
+                 'queuedCount': childpg['processGroupStatusSnapshot']['queuedCount']}
+        embeddedPgs.append(child)
+
+    pgSummary = {'name': statSnapshot['name'],
+                 'stateAt': jData['processGroupStatus']['statsLastRefreshed'],
+                 'numProcessors': len(statSnapshot['processorStatusSnapshots']),
+                 'nonRunning': runProc,
+                 'childProcessorsGroups': embeddedPgs}
+    print json.dumps(pgSummary, indent=4, sort_keys=True)
 
 
 def disconnect( url, token, nodeAddress ):
@@ -358,9 +460,9 @@ def removeNode( url, token, nodeAddress ):
 ###################################################################################################
 ###################################################################################################
 
-possibleActions = ["list-processors", "list-connections", "list-input-processors", "stop-input-processors",
+possibleActions = ["processor-group-health", "list-processors", "list-connections", "list-connections-detailed", "list-input-processors", "stop-input-processors",
                         "start-input-processors", "status", "bulletins", "cluster", "node", "disconnect",
-                        "connect", "decommission", "remove"]
+                        "connect", "decommission", "remove", "counters", "reset-counter", "reset-all-counters"]
 
 parser = argparse.ArgumentParser(description='Python client to call NiFi REST API.')
 
@@ -375,13 +477,22 @@ requiredNamed.add_argument('--action', choices=possibleActions, help='Action to 
 nodeArgs = parser.add_argument_group('Arguments for node related actions')
 nodeArgs.add_argument('--node', help='Node address to use for the action', required=False)
 
+pgArgs = parser.add_argument_group('Arguments for processor group related actions')
+pgArgs.add_argument('--pg', help='Processor group id to use for the action', required=False)
+
+counterArgs = parser.add_argument_group('Arguments for counter related actions')
+counterArgs.add_argument('--counter', help='Counter id to reset', required=False)
+
 args = parser.parse_args()
 
 url = args.url
 action = args.action
 login = args.login
-password = args.password
+#password = args.password
+password = getpass.getpass()
 node = args.node
+pg = args.pg
+counter = args.counter
 debug = args.debug
 
 if( url.startswith('https') ):
@@ -389,8 +500,18 @@ if( url.startswith('https') ):
 
 if( action == "list-processors" ):
     print listProcessorsId(url, token, None, True)
+elif( action == "processor-group-health"):
+	showPgHealth( url, token, pg)
+elif( action == "counters" ):
+    showCounters( url, token )
+elif( action == "reset-counter"):
+    resetCounter( url, token, counter)
+elif( action == "reset-all-counters"):
+    resetAllCounters( url, token)
 elif( action == "list-connections" ):
     print listConnectionsId(url, token, None, True)
+elif( action == "list-connections-detailed" ):
+    print showConnectionDetailed(url, token)
 elif( action == "list-input-processors" ):
     print listInputProcessorId(url, token, None, True)
 elif( action == "stop-input-processors" ):
