@@ -105,28 +105,7 @@ def execRequest( url, token, type = "GET", data = None):
         print err
         print out
         return None
-"""
-def sendAmbariMetrics ( url, metric ):
 
-    metric = {
-        "metrics": [
-            {
-                "metricname": "Counter.PublishKafka_1_0",
-                "appid": "nifi",
-                "instanceid": "25576191-9d2e-3ec1-bda1-ac07b0d17b2c",
-                "hostname": "rjk-hdf-m",
-                "timestamp": 1432075898000,
-                "starttime": 1432075898000,
-                "metrics": {
-                    "1432075898000": 0.963781711428,
-                    "1432075899000": 1432075898000
-                }
-            }
-        ]
-    }
-    execRequest( url, type=POST, metric )
-
-"""
 
 def getIds( jData, component ):
     ids = []
